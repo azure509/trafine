@@ -2,6 +2,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const axios = require('axios'); // Ajout d'axios pour les requêtes HTTP
 
 const app = express();
 const port = 8080;
@@ -11,6 +12,9 @@ app.use(bodyParser.json());
 
 // Une "base de données" temporaire en mémoire pour stocker les utilisateurs
 const users = [];
+
+// Clé Mapbox récupérée depuis la variable d'environnement ou valeur par défaut
+const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN || 'pk.eyJ1IjoiNHByb2oiLCJhIjoiY201b2d4ZDlpMGd3azJqc2kzejBwcThsYyJ9.dMF55gxCCzp0132wP8fDqA';
 
 // Endpoint pour l'inscription
 app.post('/auth/register', async (req, res) => {
@@ -77,6 +81,24 @@ const authenticateToken = (req, res, next) => {
 // Exemple d'endpoint protégé
 app.get('/protected', authenticateToken, (req, res) => {
   res.json({ message: 'This is protected data.', user: req.user });
+});
+
+// --- Nouvelle fonctionnalité : Endpoint pour récupérer un itinéraire via Mapbox ---
+// Exemple d'appel : GET /route?origin=lon1,lat1&destination=lon2,lat2
+app.get('/route', async (req, res) => {
+  const { origin, destination } = req.query;
+  if (!origin || !destination) {
+    return res.status(400).json({ error: 'Les paramètres origin et destination sont requis au format lon,lat' });
+  }
+  
+  try {
+    // Construit l'URL pour appeler l'API Directions de Mapbox
+    const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${origin};${destination}?access_token=${MAPBOX_TOKEN}&geometries=geojson`;
+    const response = await axios.get(mapboxUrl);
+    res.json(response.data);
+  } catch (error) {
+    res.status(500).json({ error: 'Erreur lors de la récupération de l\'itinéraire depuis Mapbox', details: error.message });
+  }
 });
 
 // Endpoint de base pour l'API
