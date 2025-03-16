@@ -2,19 +2,28 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const axios = require('axios'); // Ajout d'axios pour les requêtes HTTP
+const axios = require('axios');
+const QRCode = require('qrcode');
 
 const app = express();
 const port = 8080;
 
-// Utilisez body-parser pour gérer le JSON dans le corps des requêtes
+// Configuration de votre token secret Mapbox (à stocker dans une variable d'environnement en production)
+const MAPBOX_SECRET_TOKEN = process.env.MAPBOX_SECRET_TOKEN || 'sk.eyJ1IjoiNHByb2oiLCJhIjoiY204Ym84anlsMWllbTJuczc1YXo0anl5NCJ9.RsHFRpOuVav_F2aPF2boyw';
+
+// Clé secrète pour JWT (à sécuriser et stocker dans une variable d'environnement)
+const JWT_SECRET = process.env.JWT_SECRET || 'secretKey';
+
+// Utiliser body-parser pour gérer le JSON dans le corps des requêtes
 app.use(bodyParser.json());
 
-// Une "base de données" temporaire en mémoire pour stocker les utilisateurs
+// Stockage en mémoire pour simplifier (à remplacer par une base de données)
 const users = [];
+const incidents = [];  // Stocke les incidents signalés
 
-// Clé Mapbox récupérée depuis la variable d'environnement ou valeur par défaut
-const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN || 'sk.eyJ1IjoiNHByb2oiLCJhIjoiY204Ym84anlsMWllbTJuczc1YXo0anl5NCJ9.RsHFRpOuVav_F2aPF2boyw';
+// ---------------------
+// AUTHENTIFICATION
+// ---------------------
 
 // Endpoint pour l'inscription
 app.post('/auth/register', async (req, res) => {
@@ -23,16 +32,13 @@ app.post('/auth/register', async (req, res) => {
     return res.status(400).json({ message: 'Username and password are required' });
   }
   
-  // Vérifier si l'utilisateur existe déjà
   const existingUser = users.find(user => user.username === username);
   if (existingUser) {
     return res.status(409).json({ message: 'Username already exists' });
   }
   
   try {
-    // Hachage du mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
-    // Stockage de l'utilisateur
     users.push({ username, password: hashedPassword });
     res.status(201).json({ message: 'User registered successfully' });
   } catch (error) {
@@ -43,21 +49,17 @@ app.post('/auth/register', async (req, res) => {
 // Endpoint pour la connexion
 app.post('/auth/login', async (req, res) => {
   const { username, password } = req.body;
-  // Rechercher l'utilisateur dans la "base de données"
   const user = users.find(user => user.username === username);
   if (!user) {
     return res.status(401).json({ message: 'Invalid username or password' });
   }
   
   try {
-    // Comparaison du mot de passe envoyé avec le mot de passe haché stocké
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) {
       return res.status(401).json({ message: 'Invalid username or password' });
     }
-    
-    // Génération du token (remplacez 'secretKey' par une clé secrète plus robuste en production)
-    const token = jwt.sign({ username: user.username }, 'secretKey', { expiresIn: '1h' });
+    const token = jwt.sign({ username: user.username }, JWT_SECRET, { expiresIn: '1h' });
     res.json({ token });
   } catch (error) {
     res.status(500).json({ message: 'Error during login' });
@@ -67,39 +69,105 @@ app.post('/auth/login', async (req, res) => {
 // Middleware pour protéger les routes
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
-  // Le token est envoyé dans le header Authorization sous la forme "Bearer <token>"
   const token = authHeader && authHeader.split(' ')[1];
   if (!token) return res.sendStatus(401);
   
-  jwt.verify(token, 'secretKey', (err, user) => {
+  jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) return res.sendStatus(403);
     req.user = user;
     next();
   });
 };
 
-// Exemple d'endpoint protégé
-app.get('/protected', authenticateToken, (req, res) => {
-  res.json({ message: 'This is protected data.', user: req.user });
-});
+// ---------------------
+// NAVIGATION ET ITINÉRAIRE VIA MAPBOX
+// ---------------------
 
-// --- Nouvelle fonctionnalité : Endpoint pour récupérer un itinéraire via Mapbox ---
-// Exemple d'appel : GET /route?origin=lon1,lat1&destination=lon2,lat2
+// Endpoint pour récupérer un itinéraire via Mapbox
+// Exemple d'utilisation : GET /route?origin=lon1,lat1&destination=lon2,lat2
 app.get('/route', async (req, res) => {
   const { origin, destination } = req.query;
   if (!origin || !destination) {
-    return res.status(400).json({ error: 'Les paramètres origin et destination sont requis au format lon,lat' });
+    return res.status(400).json({ error: 'origin and destination query parameters are required (format: lon,lat)' });
   }
   
   try {
-    // Construit l'URL pour appeler l'API Directions de Mapbox
-    const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${origin};${destination}?access_token=${MAPBOX_TOKEN}&geometries=geojson`;
+    const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${origin};${destination}?access_token=${MAPBOX_SECRET_TOKEN}&geometries=geojson`;
     const response = await axios.get(mapboxUrl);
     res.json(response.data);
   } catch (error) {
-    res.status(500).json({ error: 'Erreur lors de la récupération de l\'itinéraire depuis Mapbox', details: error.message });
+    res.status(500).json({ error: 'Error retrieving route from Mapbox', details: error.message });
   }
 });
+
+// ---------------------
+// GESTION DES INCIDENTS
+// ---------------------
+
+// Endpoint pour signaler un incident (protégé)
+app.post('/incident', authenticateToken, (req, res) => {
+  const { type, location, description } = req.body;
+  if (!type || !location) {
+    return res.status(400).json({ error: 'type and location are required' });
+  }
+  
+  // Création d'un incident avec un identifiant unique simple
+  const incident = {
+    id: incidents.length + 1,
+    type,
+    location,  // Attendu sous la forme "lon,lat"
+    description: description || '',
+    reportedBy: req.user.username,
+    votes: 0,  // Score de validation par la communauté
+    timestamp: new Date()
+  };
+  incidents.push(incident);
+  res.status(201).json({ message: 'Incident reported', incident });
+});
+
+// Endpoint pour consulter tous les incidents (public ou protégé selon vos besoins)
+app.get('/incident', (req, res) => {
+  res.json(incidents);
+});
+
+// Endpoint pour voter sur un incident (validation/invalidation)
+// Exemple : POST /incident/vote avec { incidentId: 1, vote: 1 } (vote peut être +1 ou -1)
+app.post('/incident/vote', authenticateToken, (req, res) => {
+  const { incidentId, vote } = req.body;
+  const incident = incidents.find(inc => inc.id === incidentId);
+  if (!incident) {
+    return res.status(404).json({ error: 'Incident not found' });
+  }
+  if (![1, -1].includes(vote)) {
+    return res.status(400).json({ error: 'Vote must be +1 or -1' });
+  }
+  incident.votes += vote;
+  res.json({ message: 'Vote recorded', incident });
+});
+
+// ---------------------
+// PARTAGE D'ITINÉRAIRE VIA QR CODE
+// ---------------------
+
+// Endpoint pour générer un QR code à partir d'un itinéraire (ou d'une URL d'itinéraire)
+// Exemple : GET /itinerary/qr?url=<url>
+app.get('/itinerary/qr', (req, res) => {
+  const { url } = req.query;
+  if (!url) {
+    return res.status(400).json({ error: 'url query parameter is required' });
+  }
+  
+  QRCode.toDataURL(url, (err, qrCodeUrl) => {
+    if (err) {
+      return res.status(500).json({ error: 'Error generating QR code', details: err.message });
+    }
+    res.json({ qrCodeUrl });
+  });
+});
+
+// ---------------------
+// ROUTES D'EXEMPLE
+// ---------------------
 
 // Endpoint de base pour l'API
 app.get('/', (req, res) => {
