@@ -14,7 +14,7 @@ app.use(bodyParser.json());
 const users = [];
 
 // Clé Mapbox récupérée depuis la variable d'environnement ou valeur par défaut
-const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN || 'pk.eyJ1IjoiNHByb2oiLCJhIjoiY201b2d4ZDlpMGd3azJqc2kzejBwcThsYyJ9.dMF55gxCCzp0132wP8fDqA';
+const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN || 'sk.eyJ1IjoiNHByb2oiLCJhIjoiY204Ym84anlsMWllbTJuczc1YXo0anl5NCJ9.RsHFRpOuVav_F2aPF2boyw';
 
 // Endpoint pour l'inscription
 app.post('/auth/register', async (req, res) => {
